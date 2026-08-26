@@ -41,10 +41,10 @@ cfmm-replicationPlank/
 │   ├── v3-core/                # Uniswap V3 core (reference)
 │   ├── v4-core/                # Uniswap V4 core
 │   ├── panoptic-v2-core/       # Panoptic V2 (source of solady, v3-core remaps)
-│   ├── unistrata/              # Unistrata hook (referenced in NOTES.md)
-│   ├── shizo/                  # Shizo module (referenced in NOTES.md)
-│   ├── mochi-yield/            # Mochi yield (referenced in NOTES.md)
-│   └── protocol/               # Centrifuge protocol (referenced in NOTES.md)
+│   ├── unistrata/              # Unistrata hook (referenced in notes/STOCHASTIC_MODEL.md)
+│   ├── shizo/                  # Shizo module (referenced in notes/STOCHASTIC_MODEL.md)
+│   ├── mochi-yield/            # Mochi yield (referenced in notes/STOCHASTIC_MODEL.md)
+│   └── protocol/               # Centrifuge protocol (referenced in notes/STOCHASTIC_MODEL.md)
 ├── refs/                       # EVM opcode and precompile reference docs (Next.js app)
 ├── .planning/
 │   └── codebase/               # GSD codebase analysis documents (this directory)
@@ -53,8 +53,8 @@ cfmm-replicationPlank/
 ├── foundry.toml                # Forge config: ffi=true, runs=10, mainnet RPC endpoint
 ├── remappings.txt              # Solidity import remappings (45 entries)
 ├── Makefile                    # Build targets for individual Plank contracts + test runner
-├── NOTES.md                    # Engineering scratch space: stochastic model, architecture sketch
-└── README.md                   # Foundry boilerplate (not project-specific)
+├── notes/                      # Binding spec docs: DATA_CONTRACT, UNITS_AND_SCALES, STOCHASTIC_MODEL
+└── README.md                   # Project README: identity, submodule map, Foundry/Plank build
 ```
 
 Vendored GAMS module (`model/`):
@@ -98,7 +98,7 @@ model/
 - `VolatilityTermStructure.plk`: composes `BoundedValue` fields into the control-parameter struct
 - Both are imported by other `.plk` files using `import types::numerics::BoundedValue` style paths
 
-**`spec/entities/Types.md` — Formal type kernel:**
+**`spec/protocol/entities/Types.md` — Formal type kernel:**
 - The specification document that governs the type system for both tracks
 - Defines: `NumberFormat`, `BoundedValue<NumberFormat, lowerBound, upperBound>`, `VolatilityTermStructure { priceElasticity, statePartitionDelta, baseTick }`, `VolatilityGrid`, `VolatilityGridLens`
 - Any new type added to either the GAMS or Plank track should be specified here first
@@ -135,7 +135,7 @@ model/
 - `test/LiquidityDensityFunctionPlankTest.t.sol`: LDF conformance tests
 
 **Specification:**
-- `spec/entities/Types.md`: canonical type definitions
+- `spec/protocol/entities/Types.md`: canonical type definitions
 
 **Configuration:**
 - `foundry.toml`: `ffi = true` (required for Plank FFI), `runs = 10` (fuzz), mainnet RPC endpoint
@@ -205,7 +205,7 @@ model/
 - Create conformance test extending `bunni-v2/test/ldf/LiquidityDensityFunctionTest.sol`
 
 **New type definition:**
-- Spec first: add to `spec/entities/Types.md`
+- Spec first: add to `spec/protocol/entities/Types.md`
 - Plank type constructor: `src/types/NewType.plk`
 - GAMS equivalent (if applicable): add set/parameter in the relevant `.gms` file
 
