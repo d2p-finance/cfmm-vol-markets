@@ -1,0 +1,147 @@
+import std::regions::{is_region};
+import std::error::require;
+
+// Extra(T): a TAGGED SLICE DESCRIPTOR into region T.
+//
+// It says WHERE a payload lives and HOW MANY BITS it occupies -- and nothing about what is built
+// from it. `T` is a phantom type parameter used as a region index (Haskell: the `s` in `ST s`);
+// `struct T { ... }` makes Extra(memory) and Extra(calldata) distinct types even though the fields
+// are identical, so a calldata descriptor can never be read as a memory one.
+//
+// The descriptor is ONE packed word:
+//
+//     flags(u8) @248 | offset(u32) @216 | len(u16) @200
+//
+//   flags   -- FLAG_PANOPTIC is the only bit defined; every other bit is RESERVED and rejected on
+//              decode, so a future flag cannot be smuggled past an old decoder (Shock's rule).
+//   offset  -- BYTE offset into region T at which the payload starts.
+//   len     -- payload size in BITS.
+//
+// Under FLAG_PANOPTIC the payload is 40 bits: leg k occupies [8k..8k+7] with optionRatio 7 bits
+// at 8k (1..127) and tokenType 1 bit at 8k+7, then vegoid 8 bits at 32 (1..255).
+// Dereferencing it is Phase 3; this file carries the descriptor and the payload FORMAT.
+//
+// poolId is deliberately NOT here. It stays an explicit parameter of
+// vol_order_to_panoptic_token_id because the Haskell oracle keeps it explicit --
+//   volOrderToTokenId :: VolOrder -> Integer -> (Integer,Integer,Integer,Integer) -> PanopticTokenId
+// (spec/src/Panoptic/NId.hs) -- and spec/ is the authority for this milestone; matching its shape
+// is worth more than removing a parameter. Putting poolId in the descriptor as well would give one
+// datum two sources with nothing reconciling them.
+//
+// NOT reinvented from std: `std::slice::Slice(R, T, arity)` (new at plank 00c0a1a) is the typed
+// region-generic view a Phase 3 dereference will build over the four ratios, and
+// `std::calldata::unsafe_calldata_read` reads the poolId word. std has no TAGGED descriptor, which
+// is the one thing this file adds.
+const Extra = fn (comptime T: type) type {
+    if !is_region(T) {
+        @compile_error("Extra: T must be a region (std::regions::memory or ::calldata)");
+    }
+    return struct T {
+        flags: u256,
+        offset: u256,
+        len: u256
+    };
+};
+
+const FLAG_PANOPTIC = 0x01;
+const EXTRA_FLAGS_MASK = 0x01;
+
+// 4 legs x (7-bit optionRatio + 1-bit tokenType) = 32, plus an 8-bit vegoid = 40 bits.
+// WIDENED from 28 in Phase 2.5 (VORD-07): 28 carried the ratios only, and the map also needs
+// per-leg tokenType and vegoid. The leg STRIDE moved 7 -> 8, so EVERY offset moved -- safe only
+// because Phase 3 had no producers yet. 28 was itself the 76 -> 28 correction (PR #65 / b2868cc),
+// so this reopens a recent decision deliberately, with maintainer approval, not by drift.
+// (Still NOT 48 + 40: poolId is an explicit parameter, not part of the descriptor -- see above.)
+const EXTRA_PANOPTIC_BITS = 40;
+
+const PAYLOAD_LEG_STRIDE = 8;
+const PAYLOAD_OFF_VEGOID = 32;
+const MASK_U7 = 0x7f;
+const MASK_U8_PAYLOAD = 0xff;
+
+const EXTRA_OFF_FLAGS = 248;
+const EXTRA_OFF_OFFSET = 216;
+const EXTRA_OFF_LEN = 200;
+const MASK_U32_EXTRA = 0xffffffff;
+const MASK_U16_EXTRA = 0xffff;
+
+// Decode = split the word, reject reserved flag bits, and require the length the flags imply.
+// A descriptor whose len contradicts its flags is malformed, not merely unusual.
+const extra_decode = fn (comptime T: type, word: u256) Extra(T) {
+    let flags = @evm_shr(EXTRA_OFF_FLAGS, word);
+    require(flags <= EXTRA_FLAGS_MASK);
+    let len = @evm_shr(EXTRA_OFF_LEN, word) & MASK_U16_EXTRA;
+    if (flags & FLAG_PANOPTIC) != 0 {
+        require(len == EXTRA_PANOPTIC_BITS);
+    } else {
+        require(len == 0);
+    }
+    Extra(T) {
+        flags: flags,
+        offset: @evm_shr(EXTRA_OFF_OFFSET, word) & MASK_U32_EXTRA,
+        len: len
+    }
+};
+
+// The inverse, so a caller can build a descriptor without knowing the bit layout.
+const extra_encode = fn (comptime T: type, e: Extra(T)) u256 {
+    @evm_shl(EXTRA_OFF_FLAGS, e.flags & EXTRA_FLAGS_MASK)
+    | @evm_shl(EXTRA_OFF_OFFSET, e.offset & MASK_U32_EXTRA)
+    | @evm_shl(EXTRA_OFF_LEN, e.len & MASK_U16_EXTRA)
+};
+
+// An empty descriptor: no flags, no payload. What an order carries when it points at nothing.
+const extra_none_payload = fn (comptime T: type) Extra(T) {
+    Extra(T) { flags: 0, offset: 0, len: 0 }
+};
+
+// Is this descriptor the Panoptic operand set?
+const extra_is_panoptic = fn (comptime T: type, e: Extra(T)) bool {
+    (e.flags & FLAG_PANOPTIC) != 0
+};
+
+// ---- FLAG_PANOPTIC payload accessors -------------------------------------------------------
+// Leg k occupies [8k .. 8k+7]. The stride is 8, NOT 7: the tokenType bit is the top bit of the
+// leg's byte. A stride of 7 would make each leg's tokenType read as the next leg's ratio LSB.
+
+const extra_payload_option_ratio = fn (p: u256, leg: u256) u256 {
+    @evm_shr(leg *% PAYLOAD_LEG_STRIDE, p) & MASK_U7
+};
+
+const extra_payload_token_type = fn (p: u256, leg: u256) u256 {
+    @evm_shr((leg *% PAYLOAD_LEG_STRIDE) +% 7, p) & 0x1
+};
+
+const extra_payload_vegoid = fn (p: u256) u256 {
+    @evm_shr(PAYLOAD_OFF_VEGOID, p) & MASK_U8_PAYLOAD
+};
+
+// ZERO is the only reachable invalid value in either field: at 7 and 8 bits respectively, anything
+// above the maximum is unrepresentable, so there is nothing else to range-check.
+//   vegoid      1..255  -- both SFPMs revert Errors.InvalidTokenIdParameter(0) on zero
+//   optionRatio 1..127  -- the Haskell oracle errors outside 1..127
+const extra_payload_validate = fn (p: u256) void {
+    require(extra_payload_vegoid(p) != 0);
+    require(extra_payload_option_ratio(p, 0) != 0);
+    require(extra_payload_option_ratio(p, 1) != 0);
+    require(extra_payload_option_ratio(p, 2) != 0);
+    require(extra_payload_option_ratio(p, 3) != 0);
+};
+
+const POOL_ID_OFF_VEGOID = 40;
+
+// The payload's declared vegoid must agree with pool_id bits 40..47.
+//
+// THE `!= 0` CHECK IS NOT REDUNDANT WITH THE EQUALITY. `require(a == b)` passes when BOTH sides
+// are zero, and vegoid == 0 is invalid -- both SFPMs revert Errors.InvalidTokenIdParameter(0). So
+// a zero-vegoid payload against a poolId whose vegoid byte is also zero satisfies the equality and
+// would pass on it alone. Do not delete either line as a duplicate of the other; the test
+// test__unit__vegoidZeroOnBothSidesStillReverts exists to make that removal fail.
+//
+// This reads ONLY bits 40..47 of the poolId: the tickSpacing at 48..63 and the 40-bit pattern
+// below are none of its business.
+const extra_payload_require_vegoid_agrees = fn (p: u256, pool_id: u256) void {
+    let v = extra_payload_vegoid(p);
+    require(v != 0);
+    require(v == (@evm_shr(POOL_ID_OFF_VEGOID, pool_id) & MASK_U8_PAYLOAD));
+};

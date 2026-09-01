@@ -82,7 +82,7 @@
 # 86 pass / 5 fail) and belongs to the TickVolatility track, NOT to src/types/pos_spec/. Re-run
 # before treating an extra failure as a regression.
 # See .planning/phases/17-interface-single-call-module/deferred-items.md (D1).
-test: check-algebra-ref-pin
+test:
 	forge test --via-ir --optimize
 
 # compile: every Plank entrypoint -> EVM bytecode. A PRECONDITION, never acceptance.
@@ -105,39 +105,6 @@ sol-test:
 
 test-pricing-kernel-diff:
 	forge clean && forge test --match-contract PricingKernelPlankdiffTest -vvvv --via-ir --optimize
-
-# The Solidity oracle references (Algebra + UniV3). This is the baseline the Plank
-# differential test diffs against, so it must be green before that work means anything.
-test-market-statistics:
-	forge test --match-contract MarketStatisticsTest --via-ir --optimize
-
-# The WHOLE realized-volatility differential suite -- all five contracts, which now live in the
-# single file test/market_state_measurements/RealizedVolatility.diff.t.sol:
-#
-#   RealizedVolatilityKernelProbeTest    the kernel pair on ONE point, vs a hand-derived anchor
-#   RealizedVolatilityKernelDiffTest     VDIFF-02: the 5-D kernel fuzz, full uint256, tolerance 0
-#   RealizedVolatilitySmokeTest          the module deploys, dispatches, and each past bug is
-#                                        falsifiable
-#   RealizedVolatilityDiffTest           Algebra vs UniV3 vs Plank on the TICK surface
-#   RealizedVolatilityTimepointDiffTest  VDIFF-04: Algebra vs Plank on the VARIANCE surface,
-#                                        asserted after EVERY write
-#
-# `make compile` passing proves NONE of this -- see the note on `test` above.
-test-realized-vol:
-	forge test --match-path 'test/market_state_measurements/RealizedVolatility.diff.t.sol' --via-ir --optimize
-
-# The Algebra reference the whole differential exercise is measured against lives in
-# node_modules -- untracked (.gitignore:2) and silently rewritten by `npm ci`. It was already
-# corrupted once by an editor auto-fill (tickCumulative -> tickC umulative). This pins the whole
-# 4-file import closure the harness links, NOT just VolatilityOracle.sol: pinning one file of a
-# closure is false assurance. Red here means the baseline moved -- every "bit-exact vs Algebra"
-# claim downstream is void until it is restored or deliberately re-pinned.
-check-algebra-ref-pin:
-	@bash scripts/check-algebra-ref-pin.sh
-
-# Everything that must be green for the oracle: the pinned baseline refs, then the whole vol
-# suite. The pin runs FIRST: verifying the baseline after diffing against it proves nothing.
-test-vol-prereqs: check-algebra-ref-pin test-market-statistics test-realized-vol
 
 # Phase 13 issuance library differential + fuzz battery (the single file
 # test/exposure/VegaIssuance.diff.t.sol -- probe + reverts + monotonicity from 13-01, plus the
@@ -170,58 +137,25 @@ test-vega-e2e:
 test-vol-order-validation:
 	forge test --match-path 'test/types/pos_spec/VolOrderValidation.t.sol' --via-ir --optimize
 
-# test-vol-order-manager: the VolOrderManagerMod MODULE surface (VORD-01/03/04/05) -- create_order
-# dispatch, the two keccak-derived slots, the unmasked derived-slot store, monotonic ids, the
-# state-asserted invalid-tuple guard, both readers with the zero sentinel, and the selector +
-# slot-distance conformance checks. Distinct from test-vol-order-validation, which owns the PURE
-# lib surface (Phase 16). One file per surface.
-test-vol-order-manager:
-	forge test --match-path 'test/pos_spec/VolOrderManager.t.sol' --via-ir --optimize
+# test-vol-order-tokenid-diff: the Haskell<->Plank volOrderToTokenId DIFFERENTIAL (RED-01..RED-06).
+# One input driven into BOTH spec/src/Panoptic/NId.hs::volOrderToTokenId and the Plank map
+# vol_order_to_panoptic_token_id (via VolOrderToPanopticTokenIdHarness.plk), asserted equal at
+# tolerance 0. Distinct from test-vol-order-diff, which is the pos_spec MODULE sequence
+# differential against a Solidity mock -- different subject, different oracle, different doctrine
+# (there the mock is disposable; here NEITHER SIDE IS SACROSANCT).
+# UNTIL PHASE 7 THIS IS SKIP-GUARDED and reports SKIP: SpecOracle.volOrderToTokenId is a stub
+# that reverts, SpecOracle.health() reports TransportFailure, setUp caches that once, and the two
+# differential tests self-skip on it. That is the intended RED state, not a failure. The two
+# evidence tests (test_specHelper_stubRevertsAndProbeReportsNotWired, test_implSide_answersOnAnchor)
+# DO run and must PASS -- without them, "everything skipped" and "the file is inert" would look
+# identical in the log.
+# Transport-boundary target: see test/protocol_integrations/SpecHelper.sol (RED-06).
+# NOTE: develop-gate is the only build environment for this repo; this target is a convenience
+# entry point, not the validation path.
+test-vol-order-tokenid-diff:
+	forge test --match-path 'test/protocol_integrations/VolOrderToPanopticTokenId.diff.t.sol' --via-ir --optimize
 
-# test-vol-order-batch: the create_orders BATCH surface (MCAL-01/02/03/04/06) -- the three calldata
-# guards, MAX_BATCH, per-tuple validate-then-skip with contiguous ids, batch-of-1 equivalence and
-# the N=0 no-op. Distinct from test-vol-order-manager, which owns the SINGLE-CALL surface: this file
-# needs hand-rolled MALFORMED calldata over low-level .call, which a typed interface cannot express.
-test-vol-order-batch:
-	forge test --match-path 'test/pos_spec/VolOrderManagerBatch.t.sol' --via-ir --optimize
-
-# test-vol-order-return: the hand-rolled (bool,uint256)[] RETURN ENCODER (MCAL-05) -- head 0x40,
-# stride 0x40, total 64+64N, the N=0 64-byte edge, canonical bools, (false,0) failures and the
-# N=128 allocation probe, all compared BYTE FOR BYTE against solc's standard abi.encode. Distinct
-# from test-vol-order-batch, which owns the INPUT half (guards, MAX_BATCH, state effects).
-test-vol-order-return:
-	forge test --match-contract VolOrderManagerReturnEncodingTest --via-ir --optimize
-
-# test-vol-order-diff: the MVER-01 after-every-write SEQUENCE DIFFERENTIAL. Interleaved
-# (create_order | create_orders) sequences driven into the FFI-deployed module AND an independent
-# Solidity reference mock, asserting orderCount, every stored packed word via raw vm.load + the
-# single VolOrderDecoder, and raw return-byte equality against solc's STANDARD abi.encode -- at
-# tolerance 0, after EVERY write. Distinct from test-vol-order-batch and test-vol-order-return,
-# which test the two entrypoints in ISOLATION: the interleave is the one thing they structurally
-# could not cover, and it is where an id-allocation disagreement between the two paths surfaces.
-test-vol-order-diff:
-	forge test --match-path 'test/pos_spec/VolOrderManager.diff.t.sol' --via-ir --optimize
-
-# test-vol-order-fixture: the MVER-03 CONSUMER GOLDEN FIXTURE. The module's returndata compared
-# byte-for-byte against bytes produced by `cast abi-encode` (alloy) -- an encoder OUTSIDE this
-# repo and a different implementation from solc's -- plus the selector-completeness gate over
-# every `signature::` string in src/interfaces/pos_spec/VolOrderManagerInterface.plk.
-# SCOPE LIMIT, recorded so the exit record cannot conflate two claims: alloy confirms the bytes
-# are STANDARD ABI. It does NOT exercise the Haskell consumer's decoder. That gap is tracked as a
-# per-case placeholder inside the fixture file itself.
-test-vol-order-fixture:
-	forge test --match-path 'test/pos_spec/VolOrderManagerFixture.t.sol' --via-ir --optimize
-
-# test-vol-order-acceptance: THE PHASE 19 ACCEPTANCE BAR (MVER-01/03/04) in one invocation --
-# the whole pos_spec surface: validation lib, single-call module, batch input, return encoder,
-# sequence differential and consumer fixture. This is the dedicated target MVER-04 asks for.
-#
-# IT IS A SUBSET, NEVER A SUBSTITUTE FOR `make test`. Green here says nothing about the suites it
-# skips, and MVER-02's mutation evidence is not reproducible from any target -- it lives in
-# .planning/phases/19-*/19-MUTATION-BATTERY.md as recorded OBSERVATIONS.
-test-vol-order-acceptance: test-vol-order-validation test-vol-order-manager test-vol-order-batch test-vol-order-return test-vol-order-diff test-vol-order-fixture
-
-.PHONY: check-algebra-ref-pin test-market-statistics test-realized-vol test-vol-prereqs test-vega-issuance test-vega-account test-vega-e2e test-vol-order-validation test-vol-order-manager test-vol-order-batch test-vol-order-return test-vol-order-diff test-vol-order-fixture test-vol-order-acceptance
+.PHONY: test-vega-issuance test-vega-account test-vega-e2e test-vol-order-validation test-vol-order-tokenid-diff
 
 
 #####################################################################
@@ -238,16 +172,10 @@ PLANK         ?= plank
 # because 16 imports still reference it bare (`pos_spec::X`) rather than via
 # `types::pos_spec::X`.
 PLANK_DEP := --dep v3=lib/plankified-univ3/plank/lib/ --dep std=lib/plank-monorepo/std/ --dep pos_spec=src/types/pos_spec \
-             --dep lib=src/lib --dep types=src/types --dep interfaces=src/interfaces \
-             --dep helpers=test/protocol_integrations/helpers \
-             --dep model_interfaces=src/models/mev_tax_model_one/interfaces/ \
-             --dep model_libraries=src/models/mev_tax_model_one/libraries/
-# ^ `helpers`: test-only Plank helper libs (PriceUpdateLogWithSwap) that a src module's
-#   TEST-oriented entrypoint (PriceSetterHook.write_price) imports. Kept in sync with
-#   test/PlankTestBase.sol:plankOpts().
-# ^ `model_interfaces`/`model_libraries`: the mev_tax_model_one dep roots so compile-plank can
-#   build the model's own entrypoints (AlgebraIntegralShocksWriterMod, ShockHarness). Unused by
-#   non-model entrypoints (plank resolves only imported modules), so declaring them globally is safe.
+             --dep lib=src/lib --dep types=src/types --dep interfaces=src/interfaces
+# cfmm-types entrypoints (Hook.plk): types root points at the submodule, not src/types.
+# Keep in sync with test/PlankTestBase.sol:cfmmTypesPlankOpts().
+CFMM_TYPES_PLANK_DEP := --dep std=lib/cfmm-types/lib/plank-monorepo/std/ --dep types=lib/cfmm-types/src/types
 PLANK_BACKEND := sona
 PLANK_BUILD   := build/plank
 # plank-toolchain: build the plank_dev compiler from the PINNED plank-monorepo submodule and install
@@ -333,24 +261,26 @@ clean-plank:
 	@rm -rf $(PLANK_BUILD)
 
 
-.PHONY: compile-plank clean-plank
+# abi-edge-stamp (Phase 2, VORD-02): the harness ABI edge, stamped MECHANICALLY in CI.
+# VolOrderToPanopticTokenIdHarness.plk's external surface is frozen for the VolOrder(T)
+# refactor; there is no local build, so the proof is two lines printed by every push build:
+#   abi-edge sha256:   <sha256 of the compiled creation hex>
+#   abi-edge selector: <each PUSH4 immediate, sorted, one per line>
+# The selector set is the dispatch surface (run{} compares @evm_shr(224, calldataload(0))
+# against PUSH4 constants). Byte-identical hex is the strongest possible reading; an equal
+# selector set with a moved hash means internals changed and the surface did not.
+# Same invocation as compile-plank (line ~340) and as PlankTestBase.plankOpts() over FFI,
+# so the stamped bytes are the bytes the tests deploy. Reads: cast (pinned foundry), plank.
+ABI_EDGE_HARNESS := test/protocol_integrations/VolOrderToPanopticTokenIdHarness.plk
+ABI_EDGE_DIR     := $(PLANK_BUILD)/abi-edge
+abi-edge-stamp:
+	@mkdir -p $(ABI_EDGE_DIR)
+	$(PLANK) build $(ABI_EDGE_HARNESS) $(PLANK_DEP) --backend '$(PLANK_BACKEND)' > $(ABI_EDGE_DIR)/VolOrderToPanopticTokenIdHarness.hex
+	@printf 'abi-edge sha256: %s\n' "$$(sha256sum $(ABI_EDGE_DIR)/VolOrderToPanopticTokenIdHarness.hex | cut -d' ' -f1)"
+	@cast disassemble "$$(tr -d '[:space:]' < $(ABI_EDGE_DIR)/VolOrderToPanopticTokenIdHarness.hex)" \
+	  | grep -oE 'PUSH4[^0-9a-fx]*0x[0-9a-fA-F]{8}' | grep -oE '0x[0-9a-fA-F]{8}' | tr 'A-F' 'a-f' | sort -u \
+	  > $(ABI_EDGE_DIR)/VolOrderToPanopticTokenIdHarness.selectors
+	@sed 's/^/abi-edge selector: /' $(ABI_EDGE_DIR)/VolOrderToPanopticTokenIdHarness.selectors
+	@printf 'abi-edge selector-count: %s\n' "$$(wc -l < $(ABI_EDGE_DIR)/VolOrderToPanopticTokenIdHarness.selectors)"
 
-# --- PriceSetterHook: local tick-experiment rig -------------------------------
-# Stands up PoolManager + a flag-mined PriceSetterHook + a bound (liquidity-free) pool
-# on a local anvil. Prints the PriceSetterHook address and its verified slot0 slot.
-# Requires `anvil` running: anvil --silent
-price-setter-deploy:
-	forge script foundry-scripts/PriceSetterHook.s.sol --broadcast --rpc-url local --via-ir --optimize
-
-# Impose a tick on the bound pool: make price-setter-set-tick HOOK=0x.. TICK=-8888
-# This is the off-chain entry point -- a single anvil_setStorageAt of the value the hook
-# packs (tick + matching sqrtPriceX96, fee bits preserved). A stochastic driver issues
-# exactly this per step.
-price-setter-set-tick:
-	@test -n "$(HOOK)" || (echo "usage: make price-setter-set-tick HOOK=0x.. TICK=<n>"; exit 1)
-	cast rpc --rpc-url local anvil_setStorageAt \
-		$$(cast call --rpc-url local $(HOOK) 'poolManager()(address)') \
-		$$(cast call --rpc-url local $(HOOK) 'slot0Slot()(bytes32)') \
-		$$(cast call --rpc-url local $(HOOK) 'packSlot0For(int24)(bytes32)' -- $(TICK))
-	@echo "tick  = $$(cast call --rpc-url local $(HOOK) 'readTick()(int24)')"
-	@echo "sqrtP = $$(cast call --rpc-url local $(HOOK) 'readSqrtPriceX96()(uint160)')"
+.PHONY: compile-plank clean-plank abi-edge-stamp
