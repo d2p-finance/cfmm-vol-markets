@@ -44,9 +44,6 @@ model/price_impact_all.gdx
 
 scratch/
 
-# VolumePath prover emissions (regenerated every run; never committed)
-model/mev_tax_model_one/volume_path.json
-model/mev_tax_model_one/volume_path.txt
 model/**/build/
 
 # forge script deploy artifacts (local anvil runs)
@@ -63,3 +60,4 @@ dist-newstyle/
 
 # Local Claude Code settings (per-user, not repo config)
 .agents/settings.local.json
+.spec/

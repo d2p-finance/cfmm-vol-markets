@@ -1,0 +1,130 @@
+import std::core::addr::{addr, cast_addr};
+import std::error::require;
+import std::option::{Option, Some, None, is_some, unwrap};
+import types::Pair::*;
+import types::protocol_integrations::Pool::*;
+import types::protocol_integrations::Registry::*;
+import types::protocol_integrations::Venue::*;
+
+// VolMarketKey(V): a market key TAGGED BY VENUE.
+//
+// `V` is a phantom type parameter used as a venue index, exactly as `Extra(T)` uses a region and
+// `Shock(R)` uses a region. `struct V { ... }` makes VolMarketKey(V4) and VolMarketKey(Algebra)
+// DISTINCT types even though the fields are identical, so an Algebra key can never be read as a V4
+// one -- a cross-venue call site is a COMPILE error, not a runtime revert.
+//
+// Fields are Option-wrapped; vol_market_key(V, …) is the sole value constructor.
+// Pass None for absent slots; proof fns require all three Some via vol_market_key_is_complete.
+//
+// ---------------------------------------------------------------------------------------------
+// ASSET vs NUMERAIRE -- read this before touching asset_index.
+//
+// Panoptic's `asset` BIT names the CASH/collateral token that positionSize is denominated in.
+// THIS protocol calls that token the NUMERAIRE and calls the OTHER currency the asset.
+// The mapping from this key to Panoptic's bit is a NOT -- see vol_market_key_panoptic_asset_bit.
+// ---------------------------------------------------------------------------------------------
+
+const VolMarketKey = fn (comptime V: type) type {
+    if !is_venue(V) {
+        @compile_error("VolMarketKey: V must be V4, V3 or Algebra");
+    }
+    return struct V {
+        pair: Option(Pair),
+        registry: Option(Registry(V)),
+        pool: Option(Pool(V)),
+    };
+};
+
+const vol_market_key = fn (
+    comptime V: type,
+    pair: Option(Pair),
+    registry: Option(Registry(V)),
+    pool: Option(Pool(V))
+) VolMarketKey(V) {
+    VolMarketKey(V) { pair: pair, registry: registry, pool: pool }
+};
+
+const vol_market_key_is_complete = fn (comptime V: type, k: VolMarketKey(V)) bool {
+    is_some(Pair, k.pair)
+    & is_some(Registry(V), k.registry)
+    & is_some(Pool(V), k.pool)
+};
+
+const vol_market_key_require_complete = fn (comptime V: type, k: VolMarketKey(V)) void {
+    require(vol_market_key_is_complete(V, k));
+};
+
+const vol_market_key_finalize = fn (comptime V: type, k: VolMarketKey(V)) VolMarketKey(V) {
+    vol_market_key_require_complete(V, k);
+    k
+};
+
+const vol_market_key_v3_at = fn (
+    p: Pair, r: Registry(V3), pool_addr: addr
+) VolMarketKey(V3) {
+    vol_market_key(
+        V3, Some(p), Some(r), Some(pool_v3_at(pool_addr))
+    )
+};
+
+const vol_market_key_algebra_at = fn (
+    p: Pair, r: Registry(Algebra), pool_addr: addr
+) VolMarketKey(Algebra) {
+    vol_market_key(
+        Algebra, Some(p), Some(r), Some(pool_algebra_at(pool_addr))
+    )
+};
+
+const vol_market_key_v4_at = fn (
+    p: Pair, r: Registry(V4), tick_spacing: u256, fee_key: u256
+) VolMarketKey(V4) {
+    vol_market_key(
+        V4, Some(p), Some(r), Some(pool_v4_at_keyed(p, r, tick_spacing, fee_key))
+    )
+};
+
+const vol_market_key_currency0 = fn (comptime V: type, k: VolMarketKey(V)) u256 {
+    vol_market_key_require_complete(V, k);
+    cast_addr(unwrap(k.pair).token0, u256)
+};
+
+const vol_market_key_currency1 = fn (comptime V: type, k: VolMarketKey(V)) u256 {
+    vol_market_key_require_complete(V, k);
+    cast_addr(unwrap(k.pair).token1, u256)
+};
+
+const vol_market_key_asset_index = fn (comptime V: type, k: VolMarketKey(V)) u256 {
+    vol_market_key_require_complete(V, k);
+    unwrap(k.pair).asset_index
+};
+
+const vol_market_key_registry_word = fn (comptime V: type, k: VolMarketKey(V)) u256 {
+    vol_market_key_require_complete(V, k);
+    registry_addr(V, unwrap(k.registry))
+};
+
+const vol_market_key_fee = fn (comptime V: type, k: VolMarketKey(V)) u256 {
+    vol_market_key_require_complete(V, k);
+    pool_fee(V, unwrap(k.pool))
+};
+
+const vol_market_key_tick_spacing = fn (comptime V: type, k: VolMarketKey(V)) u256 {
+    vol_market_key_require_complete(V, k);
+    pool_tick_spacing(V, unwrap(k.pool))
+};
+
+const vol_market_key_pool_word = fn (comptime V: type, k: VolMarketKey(V)) u256 {
+    vol_market_key_require_complete(V, k);
+    pool_word(V, unwrap(k.pool))
+};
+
+const vol_market_key_panoptic_asset_bit = fn (comptime V: type, k: VolMarketKey(V)) u256 {
+    let ai = vol_market_key_asset_index(V, k);
+    require(ai <= 1);
+    1 -% ai
+};
+
+const vol_market_key_verify_pool = fn (comptime V: type, k: VolMarketKey(V)) void {
+    vol_market_key_require_complete(V, k);
+    pool_verify(V, unwrap(k.pool), unwrap(k.pair), unwrap(k.registry));
+};
