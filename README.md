@@ -53,11 +53,7 @@ notes/            binding spec docs (DATA_CONTRACT.md, UNITS_AND_SCALES.md)
 The build is **Foundry + the Plank toolchain** (there is no Hardhat step).
 
 ```bash
-git submodule update --init --recursive -- lib/   # protocol deps
-npm ci --ignore-scripts                            # @cryptoalgebra Solidity sources (forge dep)
-make plank-toolchain                               # build/install the Plank compiler from the pinned submodule
-make compile-plank                                 # compile every Plank entrypoint to EVM bytecode
-forge test --via-ir --offline                      # run the Foundry suite
+just show uhi10
 ```
 
 The `refs/`, `offchain/`, and `spec/` submodules are not initialized by the build or CI —
